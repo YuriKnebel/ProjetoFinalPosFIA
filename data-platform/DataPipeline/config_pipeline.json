@@ -4,7 +4,10 @@
     "output_table": "application_clean",
     "input_prev_table": "previous_application",
     "output_prev_table": "previous_application_clean",
-    "abt_table": "application_abt"
+    "abt_table": "application_abt",
+    "input_bureau_table": "bureau",
+    "output_table_v2": "application_clean_v2",
+    "abt_table_v2": "application_abt_v2"
   },
   "cleaning_parameters": {
     "chunk_size": 50000,
@@ -15,5 +18,9 @@
       "days_registration",
       "days_id_publish"
     ]
+  },
+  "sanitization_v2": {
+    "cardinalidade_min_freq": 500,
+    "income_winsor_q": 0.99
   }
 }

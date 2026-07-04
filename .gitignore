@@ -6,3 +6,6 @@
 /data-platform/DataPipeline/.ipynb_checkpoints/*
 /.internal
 
+# Artefato grande gerado pela pipeline/notebook (>100MB; reproduzivel). Use Git LFS se precisar versionar.
+/data-platform/DataPipeline/abt.csv
+
