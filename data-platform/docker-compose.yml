@@ -127,6 +127,7 @@ services:
       - "8888:8888"
     volumes:
       - ./DataPipeline:/home/jovyan/work
+      - ./Model:/home/jovyan/Model
     environment:
       - JUPYTER_ENABLE_LAB=yes
       - JUPYTER_TOKEN=${JUPYTER_TOKEN}
