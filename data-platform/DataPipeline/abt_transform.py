@@ -99,14 +99,14 @@ def aggregate_bureau(conn, config: dict) -> pd.DataFrame:
 
 
 def aggregate_installments(conn, config: dict):
-    """Agrega installments_payments por cliente no Postgres (Parte 7 do exp_analysis).
+    """Agrega installments_clean por cliente no Postgres (Parte 7 do exp_analysis).
 
     Da análise, `inst_late_payment_rate` foi a feature selecionada (a `inst_underpayment_rate`
-    saiu por redundância — corr. 0,81). A filtragem de linhas válidas (a 'sanitização' de
-    installments) é feita no WHERE, direto sobre a tabela crua — evita materializar 13,6M
-    de linhas num installments_clean. Se a tabela não existir, retorna None (degrada suave).
+    saiu por redundância — corr. 0,81). A tabela já vem sanitizada (linhas válidas filtradas
+    em data_sanitization.run_installments_sanitization), então aqui é só o GROUP BY. Se a
+    tabela não existir, retorna None (degrada suave: clientes ficam como 'sem histórico').
     """
-    tbl = config["database"].get("input_installments_table", "installments_payments")
+    tbl = config["database"].get("output_installments_table", "installments_clean")
     if not table_exists(conn, tbl):
         print(f"Aviso: tabela '{tbl}' não encontrada — features de installments ficarão como 'sem histórico'.")
         return None
@@ -117,10 +117,6 @@ def aggregate_installments(conn, config: dict):
             AVG(CASE WHEN (days_entry_payment - days_instalment) > 0 THEN 1.0 ELSE 0.0 END)
                 AS inst_late_payment_rate
         FROM "{tbl}"
-        WHERE sk_id_curr IS NOT NULL
-          AND sk_id_prev IS NOT NULL
-          AND days_instalment IS NOT NULL
-          AND amt_instalment  IS NOT NULL
         GROUP BY sk_id_curr
     """
     return pd.read_sql(q, conn)
@@ -163,6 +159,8 @@ def run_abt_generation(conn_id: str):
     input_table = config["database"]["output_table"]   # application_clean
     output_table = config["database"]["abt_table"]
     chunk_size = config["cleaning_parameters"]["chunk_size"]
+    # application_clean compartilha a chave de application_train (mesmo sk_id_curr)
+    key_col = config["indexes"][config["database"]["input_table"]]
 
     print("Agregando previous_application, bureau e installments no Postgres...")
     prev_agg, media_refused = aggregate_previous_application(conn, config)
@@ -175,18 +173,24 @@ def run_abt_generation(conn_id: str):
         "bureau_debt_credit_ratio", "bureau_overdue_count",
     ]
 
-    offset = 0
+    last_id = None
     is_first_chunk = True
-    print(f"Construindo a ABT '{output_table}' em lotes...")
+    print(f"Construindo a ABT '{output_table}' em lotes (keyset por {key_col})...")
 
     while True:
-        query = f'SELECT * FROM "{input_table}" LIMIT {chunk_size} OFFSET {offset};'
+        # Paginação por keyset (WHERE key > último visto): determinística, não duplica
+        # clientes. application_clean é pequena (~307k), rápida mesmo sem índice.
+        if last_id is None:
+            query = f'SELECT * FROM "{input_table}" ORDER BY "{key_col}" LIMIT {chunk_size};'
+        else:
+            query = (f'SELECT * FROM "{input_table}" WHERE "{key_col}" > {last_id} '
+                     f'ORDER BY "{key_col}" LIMIT {chunk_size};')
         chunk_df = pd.read_sql(query, conn)
 
         if chunk_df.empty:
             break
 
-        print(f"Processando lote (Offset: {offset}, Linhas: {len(chunk_df)}) para a ABT...")
+        print(f"Processando lote de {len(chunk_df)} linhas para a ABT...")
         abt = build_features(chunk_df)
 
         # --- previous_application: prev_refused_rate + flag de presença ---
@@ -220,7 +224,7 @@ def run_abt_generation(conn_id: str):
             f'COPY "{output_table}" FROM STDIN WITH CSV DELIMITER \'\t\' NULL \'\'', output
         )
         conn.commit()
-        offset += chunk_size
+        last_id = int(chunk_df[key_col].iloc[-1])
 
     cursor.close()
     conn.close()

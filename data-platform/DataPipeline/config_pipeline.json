@@ -7,10 +7,16 @@
     "input_bureau_table": "bureau",
     "output_bureau_table": "bureau_clean",
     "input_installments_table": "installments_payments",
+    "output_installments_table": "installments_clean",
     "abt_table": "application_abt"
   },
+  "indexes": {
+    "application_train": "sk_id_curr",
+    "previous_application": "sk_id_prev",
+    "bureau": "sk_id_bureau"
+  },
   "cleaning_parameters": {
-    "chunk_size": 50000,
+    "chunk_size": 100000,
     "days_employed_anomaly": 365243,
     "days_per_year": 365.25,
     "cardinality_min_freq": 500,

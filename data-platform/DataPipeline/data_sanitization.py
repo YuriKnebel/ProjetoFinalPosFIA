@@ -11,6 +11,28 @@ def load_config(config_path: str) -> dict:
         return json.load(f)
 
 
+def iter_chunks_keyset(conn, source_table: str, key_col: str, chunk_size: int):
+    """Percorre a tabela em lotes por paginação de chave (keyset): 1 passada, determinística.
+
+    Em vez de LIMIT/OFFSET (que re-varre as linhas puladas e, sem ORDER BY estável,
+    pode duplicar/pular registros), usamos WHERE key > último_visto ORDER BY key.
+    Com o índice na chave (criado na ingestão), cada lote "salta" direto para o
+    próximo trecho — O(n) total. Exige que `key_col` seja único e ordenável.
+    """
+    last_id = None
+    while True:
+        if last_id is None:
+            q = f'SELECT * FROM "{source_table}" ORDER BY "{key_col}" LIMIT {chunk_size};'
+        else:
+            q = (f'SELECT * FROM "{source_table}" WHERE "{key_col}" > {last_id} '
+                 f'ORDER BY "{key_col}" LIMIT {chunk_size};')
+        chunk_df = pd.read_sql(q, conn)
+        if chunk_df.empty:
+            break
+        yield chunk_df
+        last_id = int(chunk_df[key_col].iloc[-1])
+
+
 def create_table_from_dataframe(cursor, sample_df: pd.DataFrame, target_table: str):
     """Cria a tabela de destino dinamicamente a partir do schema do DataFrame limpo."""
     colunas = []
@@ -184,22 +206,16 @@ def run_sanitization(conn_id: str):
     input_table = config["database"]["input_table"]
     output_table = config["database"]["output_table"]
     chunk_size = config["cleaning_parameters"]["chunk_size"]
+    key_col = config["indexes"][input_table]
 
     print("Calculando estatísticas globais (medianas, p99, cardinalidade)...")
     stats = compute_app_stats(conn, config)
 
-    offset = 0
     is_first_chunk = True
-    print(f"Preparando tabela de destino '{output_table}' e processando em lotes...")
+    print(f"Preparando '{output_table}' e processando em lotes (keyset por {key_col})...")
 
-    while True:
-        query = f'SELECT * FROM "{input_table}" LIMIT {chunk_size} OFFSET {offset};'
-        chunk_df = pd.read_sql(query, conn)
-
-        if chunk_df.empty:
-            break
-
-        print(f"Processando lote (Offset: {offset}, Linhas: {len(chunk_df)})...")
+    for chunk_df in iter_chunks_keyset(conn, input_table, key_col, chunk_size):
+        print(f"Processando lote de {len(chunk_df)} linhas...")
         cleaned_df = sanitize_data(chunk_df, config, stats)
 
         if is_first_chunk:
@@ -209,7 +225,6 @@ def run_sanitization(conn_id: str):
 
         copy_dataframe_to_table(cursor, cleaned_df, output_table)
         conn.commit()
-        offset += chunk_size
 
     cursor.close()
     conn.close()
@@ -235,7 +250,7 @@ def sanitize_prev_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_prev_sanitization(conn_id: str):
-    """Função mestre para limpar a tabela previous_application em lotes."""
+    """Função mestre para limpar a tabela previous_application em lotes (keyset por sk_id_prev)."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config = load_config(os.path.join(base_dir, "config_pipeline.json"))
 
@@ -246,26 +261,18 @@ def run_prev_sanitization(conn_id: str):
     input_table = config["database"]["input_prev_table"]
     output_table = config["database"]["output_prev_table"]
     chunk_size = config["cleaning_parameters"]["chunk_size"]
+    key_col = config["indexes"][input_table]
 
     print(f"Preparando tabela de destino histórica '{output_table}'...")
     cursor.execute(f'DROP TABLE IF EXISTS "{output_table}" CASCADE;')
     cursor.execute(f'CREATE TABLE "{output_table}" (LIKE "{input_table}" INCLUDING ALL);')
     conn.commit()
 
-    offset = 0
-    print("Iniciando sanitização do histórico em lotes...")
-
-    while True:
-        query = f'SELECT * FROM "{input_table}" LIMIT {chunk_size} OFFSET {offset};'
-        chunk_df = pd.read_sql(query, conn)
-
-        if chunk_df.empty:
-            break
-
+    print("Iniciando sanitização do histórico em lotes (keyset)...")
+    for chunk_df in iter_chunks_keyset(conn, input_table, key_col, chunk_size):
         cleaned_df = sanitize_prev_data(chunk_df)
         copy_dataframe_to_table(cursor, cleaned_df, output_table)
         conn.commit()
-        offset += chunk_size
 
     cursor.close()
     conn.close()
@@ -297,7 +304,7 @@ def sanitize_bureau_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_bureau_sanitization(conn_id: str):
-    """Função mestre para limpar a tabela bureau em lotes."""
+    """Função mestre para limpar a tabela bureau em lotes (keyset por sk_id_bureau)."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config = load_config(os.path.join(base_dir, "config_pipeline.json"))
 
@@ -308,30 +315,65 @@ def run_bureau_sanitization(conn_id: str):
     input_table = config["database"]["input_bureau_table"]
     output_table = config["database"]["output_bureau_table"]
     chunk_size = config["cleaning_parameters"]["chunk_size"]
+    key_col = config["indexes"][input_table]
 
     print(f"Preparando tabela de destino do bureau '{output_table}'...")
     cursor.execute(f'DROP TABLE IF EXISTS "{output_table}" CASCADE;')
     cursor.execute(f'CREATE TABLE "{output_table}" (LIKE "{input_table}" INCLUDING ALL);')
     conn.commit()
 
-    offset = 0
-    print("Iniciando sanitização do bureau em lotes...")
-
-    while True:
-        query = f'SELECT * FROM "{input_table}" LIMIT {chunk_size} OFFSET {offset};'
-        chunk_df = pd.read_sql(query, conn)
-
-        if chunk_df.empty:
-            break
-
+    print("Iniciando sanitização do bureau em lotes (keyset)...")
+    for chunk_df in iter_chunks_keyset(conn, input_table, key_col, chunk_size):
         cleaned_df = sanitize_bureau_data(chunk_df)
         copy_dataframe_to_table(cursor, cleaned_df, output_table)
         conn.commit()
-        offset += chunk_size
 
     cursor.close()
     conn.close()
     print(f"--- Bureau limpo com sucesso na tabela '{output_table}' ---")
+
+
+# ---------------------------------------------------------------------------
+# installments_payments  (Parte 7 do exp_analysis.ipynb)
+# ---------------------------------------------------------------------------
+def run_installments_sanitization(conn_id: str):
+    """Sanitiza installments_payments -> installments_clean.
+
+    A tabela não tem chave única de linha (um cliente tem várias parcelas), então a
+    paginação por keyset não se aplica. Como a 'sanitização' aqui é apenas um filtro
+    de linhas válidas (vencimento e valor previsto conhecidos), fazemos em SQL puro:
+    uma passada no Postgres, sem trazer as ~13,6M linhas para o pandas.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    config = load_config(os.path.join(base_dir, "config_pipeline.json"))
+
+    pg_hook = PostgresHook(postgres_conn_id=conn_id)
+    conn = pg_hook.get_conn()
+    cursor = conn.cursor()
+
+    input_table = config["database"]["input_installments_table"]
+    output_table = config["database"]["output_installments_table"]
+
+    print(f"Sanitizando '{input_table}' -> '{output_table}' (SQL, filtro de linhas válidas)...")
+    cursor.execute(f'DROP TABLE IF EXISTS "{output_table}" CASCADE;')
+    cursor.execute(f"""
+        CREATE TABLE "{output_table}" AS
+        SELECT
+            sk_id_curr, sk_id_prev,
+            num_instalment_version, num_instalment_number,
+            days_instalment, days_entry_payment,
+            amt_instalment, amt_payment
+        FROM "{input_table}"
+        WHERE sk_id_curr IS NOT NULL
+          AND sk_id_prev IS NOT NULL
+          AND days_instalment IS NOT NULL
+          AND amt_instalment  IS NOT NULL;
+    """)
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+    print(f"--- Installments limpo com sucesso na tabela '{output_table}' ---")
 
 
 if __name__ == "__main__":

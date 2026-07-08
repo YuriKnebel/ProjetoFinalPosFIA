@@ -1,7 +1,18 @@
 import os
 import io
+import json
 import pandas as pd
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+
+def _load_indexes_config():
+    """Lê o mapa tabela->coluna de índice do config_pipeline.json (chave 'indexes')."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(base_dir, "config_pipeline.json")
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, "r") as f:
+        return json.load(f).get("indexes", {})
 
 # Lotes na leitura/gravação de CSV — mantém a memória baixa mesmo em arquivos
 # grandes (ex.: installments_payments.csv ~723MB). Ler o arquivo inteiro de uma
@@ -118,6 +129,10 @@ def run_csv_ingestion(conn_id: str, pasta_origem: str):
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
 
+    # Mapa tabela -> coluna de índice (centralizado no config). O índice é criado logo
+    # após a carga para acelerar as leituras ordenadas (keyset) da sanitização.
+    indexes = _load_indexes_config()
+
     if not os.path.exists(pasta_origem):
         raise FileNotFoundError(f"A pasta {pasta_origem} não existe no container.")
 
@@ -152,6 +167,15 @@ def run_csv_ingestion(conn_id: str, pasta_origem: str):
             else:
                 print(f"Formato '{extensao}' ignorado para o arquivo: {arquivo}")
                 continue
+
+            # Índice na chave (config-driven) — acelera o ORDER BY da paginação por keyset
+            if nome_tabela in indexes:
+                key = indexes[nome_tabela]
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS "idx_{nome_tabela}_{key}" ON "{nome_tabela}" ("{key}");'
+                )
+                conn.commit()
+                print(f"Índice criado em '{nome_tabela}' ({key}).")
 
             print(f"Sucesso! Tabela '{nome_tabela}' criada e populada com {total} linhas.")
 

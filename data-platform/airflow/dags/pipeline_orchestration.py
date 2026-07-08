@@ -9,6 +9,7 @@ from data_sanitization import (
     run_sanitization,
     run_prev_sanitization,
     run_bureau_sanitization,
+    run_installments_sanitization,
 )
 from abt_transform import run_abt_generation
 
@@ -47,9 +48,14 @@ with DAG(
         # bureau -> bureau_clean
         run_bureau_sanitization(conn_id)
 
+    @task(task_id="clean_installments")
+    def task_sanitize_installments(conn_id: str):
+        # installments_payments -> installments_clean
+        run_installments_sanitization(conn_id)
+
     @task(task_id="generate_analytical_base_table")
     def task_abt(conn_id: str):
-        # Une as três fontes -> application_abt
+        # Une as quatro fontes -> application_abt
         run_abt_generation(conn_id)
 
     # Instanciando as tasks
@@ -57,8 +63,16 @@ with DAG(
     limpeza_app = task_sanitize_app(CONN_ID)
     limpeza_prev = task_sanitize_prev(CONN_ID)
     limpeza_bureau = task_sanitize_bureau(CONN_ID)
+    limpeza_installments = task_sanitize_installments(CONN_ID)
     construcao_abt = task_abt(CONN_ID)
 
     # --- ORQUESTRAÇÃO DAS TASKS ---
-    # Ingestão -> sanitizações em paralelo -> montagem da ABT
-    carga_inicial >> [limpeza_app, limpeza_prev, limpeza_bureau] >> construcao_abt
+    # Sanitizações em pares (no máximo 2 simultâneas, para não saturar o Postgres):
+    #   1º par: application + previous_application
+    #   2º par: bureau + installments
+    # As duas mais pesadas em pandas (prev e bureau) ficam em pares distintos, então
+    # nunca disputam CPU/RAM do worker ao mesmo tempo.
+    carga_inicial >> [limpeza_app, limpeza_prev]
+    limpeza_app >> [limpeza_bureau, limpeza_installments]
+    limpeza_prev >> [limpeza_bureau, limpeza_installments]
+    [limpeza_bureau, limpeza_installments] >> construcao_abt
