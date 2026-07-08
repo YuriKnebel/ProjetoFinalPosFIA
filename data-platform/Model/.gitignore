@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ipynb_checkpoints/
+
+# artefato do modelo (binario; reproduzivel via train.py). metrics.json fica versionado.
+artifacts/*.pkl
+artifacts/*.joblib
