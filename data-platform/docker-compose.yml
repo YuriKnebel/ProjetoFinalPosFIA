@@ -121,7 +121,7 @@ services:
       - postgres
 
   jupyter:
-    image: jupyter/datascience-notebook:latest
+    build: ./jupyter
     container_name: jupyter_fia
     ports:
       - "8888:8888"
