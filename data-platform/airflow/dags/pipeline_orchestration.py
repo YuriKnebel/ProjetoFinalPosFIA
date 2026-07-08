@@ -1,16 +1,16 @@
 from datetime import datetime
 import sys
-import os
 from airflow import DAG
 from airflow.decorators import task
 
 sys.path.append("/opt/airflow/DataPipeline")
-sys.path.append("/opt/airflow/modelos")
 
-from data_sanitization import run_sanitization, run_prev_sanitization
+from data_sanitization import (
+    run_sanitization,
+    run_prev_sanitization,
+    run_bureau_sanitization,
+)
 from abt_transform import run_abt_generation
-from train import train_model
-from train_logistic import train_logistic_model
 
 # Constantes centralizadas
 CONN_ID = "postgres_data_db"
@@ -24,7 +24,7 @@ default_args = {
 with DAG(
     "pipeline_orchestration",
     default_args=default_args,
-    description="Orquestrador de Sanitização e ABT Nativo TaskFlow",
+    description="Orquestrador de Sanitização e ABT (application + previous_application + bureau)",
     schedule_interval=None,
     catchup=False,
     tags=["pipeline", "sanitization", "abt"],
@@ -32,25 +32,28 @@ with DAG(
 
     @task(task_id="data_sanitization")
     def task_sanitize(conn_id: str):
-        # Chama a função mestre do script passando o ID da conexão nativa
+        # Sanitiza o application_train -> application_clean
         run_sanitization(conn_id)
 
     @task(task_id="clean_previous_application")
     def task_sanitize_prev(conn_id: str):
+        # Sanitiza o previous_application -> previous_application_clean
         run_prev_sanitization(conn_id)
-    
+
+    @task(task_id="clean_bureau")
+    def task_sanitize_bureau(conn_id: str):
+        # Sanitiza o bureau -> bureau_clean
+        run_bureau_sanitization(conn_id)
+
     @task(task_id="abt_transform")
     def task_abt(conn_id: str):
-        # Chama a função mestre do script da ABT passando o ID da conexão nativa
+        # Monta a ABT unindo as três fontes -> application_abt
         run_abt_generation(conn_id)
 
-    @task(task_id="train_machine_learning_model")
-    def task_train(conn_id: str):
-        train_model(conn_id)
-
-    @task(task_id="train_logistic_model")
-    def task_train_logistic_model(conn_id: str):
-        train_logistic_model(conn_id)
-
-    # Fluxo de execução nativo e limpo
-    task_sanitize(CONN_ID) >> task_sanitize_prev(CONN_ID) >> task_abt(CONN_ID) >> task_train(CONN_ID) >> task_train_logistic_model(CONN_ID)
+    # Fluxo de execução: sanitizações das três fontes e, por fim, a montagem da ABT
+    (
+        task_sanitize(CONN_ID)
+        >> task_sanitize_prev(CONN_ID)
+        >> task_sanitize_bureau(CONN_ID)
+        >> task_abt(CONN_ID)
+    )

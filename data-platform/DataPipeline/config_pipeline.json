@@ -4,16 +4,15 @@
     "output_table": "application_clean",
     "input_prev_table": "previous_application",
     "output_prev_table": "previous_application_clean",
+    "input_bureau_table": "bureau",
+    "output_bureau_table": "bureau_clean",
     "abt_table": "application_abt"
   },
   "cleaning_parameters": {
     "chunk_size": 50000,
     "days_employed_anomaly": 365243,
-    "columns_to_absolute": [
-      "days_birth",
-      "days_employed",
-      "days_registration",
-      "days_id_publish"
-    ]
+    "days_per_year": 365.25,
+    "cardinality_min_freq": 500,
+    "income_winsor_quantile": 0.99
   }
 }

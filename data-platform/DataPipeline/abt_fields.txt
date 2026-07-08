@@ -1,12 +1,13 @@
+# Colunas da ABT (application_abt) — alinhadas ao exp_analysis.ipynb
+# Fonte de cada bloco indicada como comentário. Total: 42 colunas.
+
+# --- application_train (sanitizado) ---
 "sk_id_curr",
 "target",
 "ext_source_1",
 "ext_source_2",
 "ext_source_3",
-"age",
-"years_employed",
-"days_employed_anom",
-"region_rating_client",
+"ext_source_mean",
 "region_rating_client_w_city",
 "days_last_phone_change",
 "days_id_publish",
@@ -14,13 +15,8 @@
 "reg_city_not_work_city",
 "reg_city_not_live_city",
 "live_city_not_work_city",
-"flag_emp_phone",
-"flag_work_phone",
-"flag_phone",
-"flag_document_3",
-"flag_document_6",
+"has_car",
 "own_car_age",
-"def_30_cnt_social_circle",
 "def_60_cnt_social_circle",
 "amt_req_credit_bureau_year",
 "cnt_children",
@@ -28,7 +24,29 @@
 "amt_income_total",
 "amt_credit",
 "amt_annuity",
-"amt_goods_price",
+"occupation_type",
+"organization_type",
+"name_income_type",
+"name_education_type",
+"code_gender",
+
+# --- application_train (features derivadas) ---
+"age",
+"years_employed",
+"days_employed_anom",
 "fe_credit_income_percent",
 "fe_annuity_income_percent",
-"fe_income_per_person"
+
+# --- previous_application (agregado) ---
+"prev_refused_rate",
+"has_prev_app",
+
+# --- bureau (agregado) ---
+"bureau_avg_days_credit",
+"bureau_last_days_credit",
+"bureau_active_rate",
+"bureau_active_count",
+"bureau_closed_rate",
+"bureau_debt_credit_ratio",
+"bureau_overdue_count",
+"has_bureau"
