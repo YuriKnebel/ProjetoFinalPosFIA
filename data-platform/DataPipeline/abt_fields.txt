@@ -1,5 +1,5 @@
 # Colunas da ABT (application_abt) — alinhadas ao exp_analysis.ipynb
-# Fonte de cada bloco indicada como comentário. Total: 42 colunas.
+# Fonte de cada bloco indicada como comentário. Total: 44 colunas.
 
 # --- application_train (sanitizado) ---
 "sk_id_curr",
@@ -49,4 +49,8 @@
 "bureau_closed_rate",
 "bureau_debt_credit_ratio",
 "bureau_overdue_count",
-"has_bureau"
+"has_bureau",
+
+# --- installments_payments (agregado) ---
+"inst_late_payment_rate",
+"has_installments_history"

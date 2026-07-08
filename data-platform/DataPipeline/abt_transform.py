@@ -31,49 +31,59 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     return df_features
 
 
-def aggregate_previous_application(conn, config: dict):
-    """Agrega previous_application_clean por cliente (Parte 5 do exp_analysis).
+def table_exists(conn, table_name: str) -> bool:
+    """Verifica se uma tabela existe no banco (to_regclass retorna NULL se não existir)."""
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass(%s)", (table_name,))
+    existe = cur.fetchone()[0] is not None
+    cur.close()
+    return existe
 
-    Das features testadas na EDA, `prev_refused_rate` foi a de maior sinal.
-    Retorna também a média global da taxa (imputação de quem não tem histórico).
+
+def aggregate_previous_application(conn, config: dict):
+    """Agrega previous_application_clean por cliente no Postgres (Parte 5 do exp_analysis).
+
+    Das features testadas na EDA, `prev_refused_rate` foi a de maior sinal. O GROUP BY
+    roda no banco e devolve 1 linha por cliente; a média global (imputação de quem não
+    tem histórico) é calculada em pandas sobre esse resultado pequeno.
     """
     tbl = config["database"]["output_prev_table"]
-    prev = pd.read_sql(
-        f'SELECT sk_id_curr, sk_id_prev, name_contract_status FROM "{tbl}"', conn
-    )
-
-    agg = prev.groupby("sk_id_curr").agg(
-        prev_contract_count=("sk_id_prev", "count"),
-        prev_refused_count=("name_contract_status", lambda x: (x == "Refused").sum()),
-    )
-    agg["prev_refused_rate"] = agg["prev_refused_count"] / agg["prev_contract_count"]
+    q = f"""
+        SELECT
+            sk_id_curr,
+            SUM(CASE WHEN name_contract_status = 'Refused' THEN 1 ELSE 0 END)::float
+                / COUNT(sk_id_prev) AS prev_refused_rate
+        FROM "{tbl}"
+        GROUP BY sk_id_curr
+    """
+    agg = pd.read_sql(q, conn)
     media_refused = agg["prev_refused_rate"].mean()
-
-    return agg[["prev_refused_rate"]].reset_index(), media_refused
+    return agg, media_refused
 
 
 def aggregate_bureau(conn, config: dict) -> pd.DataFrame:
-    """Agrega bureau_clean por cliente (Parte 6 do exp_analysis).
+    """Agrega bureau_clean por cliente no Postgres (Parte 6 do exp_analysis).
 
-    Mantém as features de maior sinal: recência/atividade do crédito externo,
-    razão dívida/crédito e contagem de atrasos. `bureau_credit_count` é retornada
-    apenas para derivar a flag has_bureau no merge (descartada depois).
+    O GROUP BY (recência/atividade, dívida, atrasos) roda no banco; as taxas e o
+    ratio dívida/crédito são derivados em pandas sobre o resultado (1 linha/cliente).
+    `bureau_credit_count` é retornada só para derivar a flag has_bureau (descartada depois).
     """
     tbl = config["database"]["output_bureau_table"]
-    cols = ("sk_id_curr, sk_id_bureau, credit_active, amt_credit_sum, "
-            "amt_credit_sum_debt, amt_credit_sum_overdue, credit_day_overdue, days_credit")
-    b = pd.read_sql(f'SELECT {cols} FROM "{tbl}"', conn)
-
-    agg = b.groupby("sk_id_curr").agg(
-        bureau_credit_count=("sk_id_bureau", "count"),
-        bureau_active_count=("credit_active", lambda x: (x == "Active").sum()),
-        bureau_closed_count=("credit_active", lambda x: (x == "Closed").sum()),
-        bureau_total_credit=("amt_credit_sum", "sum"),
-        bureau_total_debt=("amt_credit_sum_debt", "sum"),
-        bureau_overdue_count=("credit_day_overdue", lambda x: (x > 0).sum()),
-        bureau_avg_days_credit=("days_credit", "mean"),
-        bureau_last_days_credit=("days_credit", "max"),
-    ).reset_index()
+    q = f"""
+        SELECT
+            sk_id_curr,
+            COUNT(sk_id_bureau)                                                   AS bureau_credit_count,
+            SUM(CASE WHEN credit_active = 'Active' THEN 1 ELSE 0 END)             AS bureau_active_count,
+            SUM(CASE WHEN credit_active = 'Closed' THEN 1 ELSE 0 END)             AS bureau_closed_count,
+            SUM(COALESCE(amt_credit_sum, 0))                                      AS bureau_total_credit,
+            SUM(COALESCE(amt_credit_sum_debt, 0))                                 AS bureau_total_debt,
+            SUM(CASE WHEN COALESCE(credit_day_overdue, 0) > 0 THEN 1 ELSE 0 END)  AS bureau_overdue_count,
+            AVG(days_credit)                                                      AS bureau_avg_days_credit,
+            MAX(days_credit)                                                      AS bureau_last_days_credit
+        FROM "{tbl}"
+        GROUP BY sk_id_curr
+    """
+    agg = pd.read_sql(q, conn)
 
     agg["bureau_active_rate"] = agg["bureau_active_count"] / agg["bureau_credit_count"]
     agg["bureau_closed_rate"] = agg["bureau_closed_count"] / agg["bureau_credit_count"]
@@ -86,6 +96,34 @@ def aggregate_bureau(conn, config: dict) -> pd.DataFrame:
         "bureau_active_rate", "bureau_active_count", "bureau_closed_rate",
         "bureau_debt_credit_ratio", "bureau_overdue_count",
     ]]
+
+
+def aggregate_installments(conn, config: dict):
+    """Agrega installments_payments por cliente no Postgres (Parte 7 do exp_analysis).
+
+    Da análise, `inst_late_payment_rate` foi a feature selecionada (a `inst_underpayment_rate`
+    saiu por redundância — corr. 0,81). A filtragem de linhas válidas (a 'sanitização' de
+    installments) é feita no WHERE, direto sobre a tabela crua — evita materializar 13,6M
+    de linhas num installments_clean. Se a tabela não existir, retorna None (degrada suave).
+    """
+    tbl = config["database"].get("input_installments_table", "installments_payments")
+    if not table_exists(conn, tbl):
+        print(f"Aviso: tabela '{tbl}' não encontrada — features de installments ficarão como 'sem histórico'.")
+        return None
+
+    q = f"""
+        SELECT
+            sk_id_curr,
+            AVG(CASE WHEN (days_entry_payment - days_instalment) > 0 THEN 1.0 ELSE 0.0 END)
+                AS inst_late_payment_rate
+        FROM "{tbl}"
+        WHERE sk_id_curr IS NOT NULL
+          AND sk_id_prev IS NOT NULL
+          AND days_instalment IS NOT NULL
+          AND amt_instalment  IS NOT NULL
+        GROUP BY sk_id_curr
+    """
+    return pd.read_sql(q, conn)
 
 
 def create_abt_table_schema(cursor, sample_df: pd.DataFrame, target_table: str):
@@ -108,11 +146,12 @@ def create_abt_table_schema(cursor, sample_df: pd.DataFrame, target_table: str):
 
 
 def run_abt_generation(conn_id: str):
-    """Monta a ABT unindo application_clean + previous_application + bureau (Parte 8).
+    """Monta a ABT unindo application_clean + previous_application + bureau + installments (Parte 8).
 
-    Cada fonte histórica é agregada para 1 linha por cliente e juntada por
-    `sk_id_curr` via left join a partir do application_clean, garantindo 1 linha
-    por cliente. Clientes sem histórico recebem imputação + flag de presença.
+    Cada fonte histórica é agregada no Postgres (GROUP BY) para 1 linha por cliente e
+    juntada por `sk_id_curr` via left join a partir do application_clean. Clientes sem
+    histórico recebem imputação + flag de presença (has_prev_app / has_bureau /
+    has_installments_history).
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config = load_config(os.path.join(base_dir, "config_pipeline.json"))
@@ -125,9 +164,10 @@ def run_abt_generation(conn_id: str):
     output_table = config["database"]["abt_table"]
     chunk_size = config["cleaning_parameters"]["chunk_size"]
 
-    print("Agregando previous_application e bureau por cliente...")
+    print("Agregando previous_application, bureau e installments no Postgres...")
     prev_agg, media_refused = aggregate_previous_application(conn, config)
     bureau_agg = aggregate_bureau(conn, config)
+    inst_agg = aggregate_installments(conn, config)   # pode ser None se a tabela não existir
 
     bureau_feature_cols = [
         "bureau_avg_days_credit", "bureau_last_days_credit",
@@ -159,6 +199,14 @@ def run_abt_generation(conn_id: str):
         abt["has_bureau"] = abt["bureau_credit_count"].notna().astype(int)
         abt = abt.drop(columns=["bureau_credit_count"])
         abt[bureau_feature_cols] = abt[bureau_feature_cols].fillna(0)
+
+        # --- installments: inst_late_payment_rate + flag de presença ---
+        if inst_agg is not None:
+            abt = abt.merge(inst_agg, on="sk_id_curr", how="left")
+        else:
+            abt["inst_late_payment_rate"] = np.nan
+        abt["has_installments_history"] = abt["inst_late_payment_rate"].notna().astype(int)
+        abt["inst_late_payment_rate"] = abt["inst_late_payment_rate"].fillna(0)
 
         if is_first_chunk:
             create_abt_table_schema(cursor, abt, output_table)

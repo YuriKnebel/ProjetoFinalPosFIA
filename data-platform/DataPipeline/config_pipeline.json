@@ -6,6 +6,7 @@
     "output_prev_table": "previous_application_clean",
     "input_bureau_table": "bureau",
     "output_bureau_table": "bureau_clean",
+    "input_installments_table": "installments_payments",
     "abt_table": "application_abt"
   },
   "cleaning_parameters": {
