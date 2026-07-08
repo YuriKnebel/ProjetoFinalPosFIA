@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "project": "Predicao de risco de credito (Home Credit Default Risk)",
+    "component": "Model",
+    "version": "1.0.0",
+    "last_updated": "2026-07-08",
+    "description": "Configuracao de treinamento, avaliacao e inferencia do modelo de risco de credito.",
+    "algorithm": "LightGBM",
+    "problem_type": "binary_classification",
+    "positive_class": 1,
+    "positive_class_description": "cliente inadimplente (default)",
+    "source": "postgres",
+    "abt_table": "application_abt",
+    "artifact": "Model/artifacts/lightgbm_abt.pkl"
+  },
+  "database": {
+    "user": "airflow",
+    "password": "airflow",
+    "host_docker": "postgres",
+    "host_local": "localhost",
+    "port": 5432,
+    "dbname": "data"
+  },
+  "variables": {
+    "identifier": "sk_id_curr",
+    "target": "target",
+    "excluded_from_training": ["sk_id_curr", "target"],
+    "categorical_features": [
+      "occupation_type",
+      "organization_type",
+      "name_income_type",
+      "name_education_type",
+      "code_gender"
+    ],
+    "input_features": [
+      "ext_source_1", "ext_source_2", "ext_source_3", "ext_source_mean",
+      "region_rating_client_w_city", "days_last_phone_change", "days_id_publish",
+      "days_registration", "reg_city_not_work_city", "reg_city_not_live_city",
+      "live_city_not_work_city", "has_car", "own_car_age", "def_60_cnt_social_circle",
+      "amt_req_credit_bureau_year", "cnt_children", "cnt_fam_members",
+      "amt_income_total", "amt_credit", "amt_annuity", "age", "years_employed",
+      "days_employed_anom", "fe_credit_income_percent", "fe_annuity_income_percent",
+      "prev_refused_rate", "has_prev_app", "bureau_avg_days_credit",
+      "bureau_last_days_credit", "bureau_active_rate", "bureau_active_count",
+      "bureau_closed_rate", "bureau_debt_credit_ratio", "bureau_overdue_count",
+      "has_bureau", "inst_late_payment_rate", "has_installments_history",
+      "occupation_type", "organization_type", "name_income_type",
+      "name_education_type", "code_gender"
+    ]
+  },
+  "parameters": {
+    "random_state": 123,
+    "split": {
+      "test_size": 0.20,
+      "stratify": true
+    },
+    "categorical_encoding": "native_lightgbm",
+    "classifier": {
+      "algorithm": "LightGBM",
+      "hyperparameters": {
+        "n_estimators": 276,
+        "learning_rate": 0.0985,
+        "num_leaves": 24,
+        "max_depth": 3,
+        "min_child_samples": 163,
+        "colsample_bytree": 0.7692,
+        "reg_lambda": 1.5025,
+        "class_weight": "balanced"
+      }
+    },
+    "inference": {
+      "decision_threshold": 0.5
+    }
+  },
+  "model_results": {
+    "selected_model": "LightGBM",
+    "selection_reason": "Maior AUC na validacao cruzada (Modelo 25 do validacao_modelos.ipynb) com overfitting controlado (gap treino-teste ~5%). Usa categoricas nativas do LightGBM (sem one-hot) por ser um modelo baseado em arvores. AUC priorizada por ser adequada a base desbalanceada e a ordenacao de risco.",
+    "cross_validation_metrics": {
+      "roc_auc": 0.7547,
+      "folds": 5
+    },
+    "test_metrics": {
+      "roc_auc": 0.7575,
+      "gini": 0.5150,
+      "ks": 0.3892,
+      "average_precision": 0.2443,
+      "brier": 0.1945
+    }
+  }
+}
